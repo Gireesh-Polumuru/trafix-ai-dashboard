@@ -13,7 +13,23 @@ import geopy
 from geopy.geocoders import Nominatim
 import requests
 import polyline
+import time
 from streamlit_option_menu import option_menu
+
+@st.cache_data(show_spinner=False)
+def get_cached_coordinates(city_name):
+    geolocator = Nominatim(user_agent="trafix_ai_optimizer_v2")
+    time.sleep(1) # Be polite to Nominatim to avoid 429 errors
+    loc = geolocator.geocode(city_name, timeout=10)
+    if loc:
+        return (loc.latitude, loc.longitude)
+    return None
+
+@st.cache_data(show_spinner=False)
+def get_cached_osrm_route(start_coords, end_coords):
+    osrm_url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=polyline&alternatives=true"
+    res = requests.get(osrm_url)
+    return res.json()
 
 st.set_page_config(page_title="Traffic AI Optimization", layout="wide", initial_sidebar_state="expanded")
 
@@ -428,15 +444,12 @@ if selected == "Live Route Map":
     
     with st.spinner("Connecting to GPS Satellites..."):
         try:
-            geolocator = Nominatim(user_agent="kyrenia_traffic_sim_ai")
-            start_loc = geolocator.geocode(start_city, timeout=10)
-            end_loc = geolocator.geocode(end_city, timeout=10)
-            if not start_loc or not end_loc:
+            start_coords = get_cached_coordinates(start_city)
+            end_coords = get_cached_coordinates(end_city)
+            
+            if not start_coords or not end_coords:
                 st.error("Could not find one of the locations. Please check your spelling and try adding ', Cyprus'.")
             else:
-                start_coords = (start_loc.latitude, start_loc.longitude)
-                end_coords = (end_loc.latitude, end_loc.longitude)
-                
                 # Center map on the middle point
                 mid_lat = (start_coords[0] + end_coords[0]) / 2
                 mid_lon = (start_coords[1] + end_coords[1]) / 2
@@ -447,10 +460,7 @@ if selected == "Live Route Map":
                 folium.Marker(end_coords, popup="Destination", icon=folium.Icon(color='red', icon='stop')).add_to(m)
                 
                 # Fetch OSRM Route
-                # Format: lon,lat;lon,lat
-                osrm_url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=polyline&alternatives=true"
-                res = requests.get(osrm_url)
-                data = res.json()
+                data = get_cached_osrm_route(start_coords, end_coords)
                 
                 if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
                     routes = data["routes"]
