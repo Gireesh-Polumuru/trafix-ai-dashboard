@@ -70,9 +70,8 @@ st.markdown("""
         background: rgba(30, 41, 59, 0.6) !important;
         backdrop-filter: blur(5px) !important;
     }
-    /* Hide the top red bar in Streamlit */
-    header {visibility: hidden;}
-    
+    /* Make top header match dark theme instead of hiding it */
+    header {background-color: transparent !important;}
     /* Custom Header Card */
     .hero-card {
         background: linear-gradient(135deg, #9a3412, #ea580c); 
