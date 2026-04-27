@@ -1,16 +1,22 @@
-# Core simulation
+# Data Science
 pandas
 numpy
 scikit-learn
 
 # Map & visualization
 folium
-plotly
-matplotlib
 streamlit-folium
+matplotlib
+plotly
 
-# Dashboard
+# Routing & Geospatial
+geopy
+requests
+polyline
+
+# Dashboard & UI
 streamlit
+streamlit-option-menu
 
 # PDF generation
 fpdf2
