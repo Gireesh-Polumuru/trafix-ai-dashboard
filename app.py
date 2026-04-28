@@ -278,6 +278,20 @@ if selected == "ML Training":
                 X = df_clean[selected_features]
                 y = df_clean[target_col]
                 
+                if "Classification" in model_choice:
+                    # Check if it's truly continuous by seeing if it has non-zero decimal parts
+                    is_continuous = False
+                    if pd.api.types.is_float_dtype(y):
+                        if not all(y.dropna() % 1 == 0):
+                            is_continuous = True
+                            
+                    if is_continuous or len(y.unique()) > 20:
+                        st.error(f"⚠️ Error: You are trying to run a Classification model on '{target_col}', which contains continuous decimal numbers! Classifiers can only predict exact categories (like whole lanes). Please switch the radio button to 'Regression'!")
+                        st.stop()
+                    
+                    # Ensure y is categorical/integer for classification
+                    y = y.astype(int) if pd.api.types.is_numeric_dtype(y) else y.astype(str)
+                
                 # Standard Scaling for preprocessing
                 scaler = StandardScaler()
                 X_scaled = scaler.fit_transform(X)
@@ -286,9 +300,6 @@ if selected == "ML Training":
                 X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
                 
                 if "Classification" in model_choice:
-                    if pd.api.types.is_float_dtype(y) or len(y.unique()) > 20:
-                        st.error(f"⚠️ Error: You are trying to run a Classification model on '{target_col}', which contains continuous decimal numbers! Classifiers can only predict exact categories (like whole lanes). Please switch the radio button to 'Regression'!")
-                        st.stop()
                     model = RandomForestClassifier(n_estimators=100, random_state=42)
                     st.session_state.model_type = "classification"
                 else:
@@ -418,6 +429,8 @@ if selected == "Dashboard":
             
             if st.session_state.model_type == "classification":
                 prediction_formatted = f"{int(prediction)}"
+            else:
+                prediction_formatted = f"{prediction:.2f}"
             
             if "lanes_closed" in inputs:
                 st.session_state.active_lanes_closed = int(inputs["lanes_closed"])
