@@ -10,16 +10,17 @@ import folium
 from streamlit_folium import st_folium
 import os
 import geopy
-from geopy.geocoders import Nominatim
+from geopy.geocoders import ArcGIS
 import requests
 import polyline
 import time
 from streamlit_option_menu import option_menu
+import plotly.express as px
 
 @st.cache_data(show_spinner=False)
 def get_cached_coordinates(city_name):
-    geolocator = Nominatim(user_agent="trafix_ai_optimizer_v2")
-    time.sleep(1) # Be polite to Nominatim to avoid 429 errors
+    # Switched from Nominatim to ArcGIS to bypass OSM rate limits
+    geolocator = ArcGIS(user_agent="trafix_ai_optimizer_v2")
     loc = geolocator.geocode(city_name, timeout=10)
     if loc:
         return (loc.latitude, loc.longitude)
@@ -317,15 +318,84 @@ if selected == "Dashboard":
         
         # 1. Visualization
         st.subheader("Data Insights")
+        
+        # --- Chart 1: Time Trend ---
         if "time" in st.session_state.features and st.session_state.target is not None:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.scatter(df_clean["time"], df_clean[st.session_state.target], alpha=0.5, c="red")
-            ax.set_xlabel("Time of Day")
-            ax.set_ylabel(st.session_state.target.capitalize())
-            ax.set_title(f"Time vs {st.session_state.target.capitalize()}")
-            st.pyplot(fig)
+            trend_data = df_clean.groupby("time")[st.session_state.target].mean().reset_index()
+            trend_data = trend_data.sort_values("time")
+            
+            st.markdown(f"**Average {st.session_state.target.capitalize()} by Time of Day**")
+            fig1 = px.bar(
+                trend_data, 
+                x="time", 
+                y=st.session_state.target,
+                labels={"time": "Time of Day (Hour)", st.session_state.target: f"Average {st.session_state.target.capitalize()}"},
+                color_discrete_sequence=["#ea580c"]
+            )
+            fig1.update_layout(
+                xaxis=dict(tickmode='linear', dtick=1),
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#e2e8f0'),
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            st.plotly_chart(fig1, use_container_width=True)
         else:
-            st.info("Scatter plot requires a 'time' feature to be selected.")
+            st.info("Time-trend chart requires a 'time' feature to be selected.")
+            
+        col_chart1, col_chart2 = st.columns(2)
+        
+        # --- Chart 2: Secondary Metric Line Chart ---
+        with col_chart1:
+            if "time" in df_clean.columns:
+                numeric_cols = df_clean.select_dtypes(include=np.number).columns.tolist()
+                candidate_cols = [c for c in numeric_cols if c != "time" and c != st.session_state.target]
+                
+                if candidate_cols:
+                    # Prefer traffic_density if available
+                    secondary_metric = "traffic_density" if "traffic_density" in candidate_cols else candidate_cols[0]
+                    
+                    st.markdown(f"**Average {secondary_metric.replace('_', ' ').capitalize()} over Time**")
+                    
+                    line_data = df_clean.groupby("time")[secondary_metric].mean().reset_index()
+                    line_data = line_data.sort_values("time")
+                    
+                    fig2 = px.line(
+                        line_data, 
+                        x="time", 
+                        y=secondary_metric,
+                        labels={"time": "Time of Day (Hour)", secondary_metric: f"Average {secondary_metric.replace('_', ' ').capitalize()}"},
+                        color_discrete_sequence=["#38bdf8"],
+                        markers=True
+                    )
+                    fig2.update_layout(
+                        xaxis=dict(tickmode='linear', dtick=1),
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#e2e8f0'), margin=dict(l=0, r=0, t=30, b=0)
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+                else:
+                    st.info("Not enough numeric columns for a secondary line chart.")
+            else:
+                 st.info("Line chart requires a 'time' column in the dataset.")
+                
+        # --- Chart 3: Target Distribution ---
+        with col_chart2:
+            if st.session_state.target is not None:
+                st.markdown(f"**Overall Distribution of {st.session_state.target.capitalize()}**")
+                target_data = df_clean[st.session_state.target].dropna()
+                
+                fig3 = px.histogram(
+                    target_data, 
+                    x=st.session_state.target,
+                    nbins=15,
+                    labels={st.session_state.target: st.session_state.target.capitalize()},
+                    color_discrete_sequence=["#fb923c"]
+                )
+                fig3.update_layout(
+                    yaxis_title="Frequency Count",
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#e2e8f0'), margin=dict(l=0, r=0, t=30, b=0)
+                )
+                st.plotly_chart(fig3, use_container_width=True)
             
         st.markdown("---")
         st.subheader("Live Prediction")
