@@ -9,28 +9,14 @@ from sklearn.metrics import r2_score, accuracy_score
 import folium
 from streamlit_folium import st_folium
 import os
-import geopy
-from geopy.geocoders import ArcGIS
-import requests
-import polyline
 import time
 from streamlit_option_menu import option_menu
 import plotly.express as px
-
-@st.cache_data(show_spinner=False)
-def get_cached_coordinates(city_name):
-    # Switched from Nominatim to ArcGIS to bypass OSM rate limits
-    geolocator = ArcGIS(user_agent="trafix_ai_optimizer_v2")
-    loc = geolocator.geocode(city_name, timeout=10)
-    if loc:
-        return (loc.latitude, loc.longitude)
-    return None
-
-@st.cache_data(show_spinner=False)
-def get_cached_osrm_route(start_coords, end_coords):
-    osrm_url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=polyline&alternatives=true"
-    res = requests.get(osrm_url)
-    return res.json()
+import math
+import requests
+import polyline
+import streamlit.components.v1 as components
+import pydeck as pdk
 
 st.set_page_config(page_title="Traffic AI Optimization", layout="wide", initial_sidebar_state="expanded")
 
@@ -131,22 +117,28 @@ if 'scaler' not in st.session_state:
     st.session_state.scaler = None
 if 'model_type' not in st.session_state:
     st.session_state.model_type = None
-if 'active_lanes_closed' not in st.session_state:
-    st.session_state.active_lanes_closed = 0
+if 'model_columns' not in st.session_state:
+    st.session_state.model_columns = []
+if 'active_incident_lane' not in st.session_state:
+    st.session_state.active_incident_lane = 0
+if 'active_diversion_lane' not in st.session_state:
+    st.session_state.active_diversion_lane = 1
+if 'temp_lane_active' not in st.session_state:
+    st.session_state.temp_lane_active = False
 
 # ---------------- SIDEBAR NAVIGATION ----------------
 with st.sidebar:
     st.markdown("""
     <div style="text-align: center; padding: 10px 0 20px 0;">
         <h2 style="color: #fb923c !important; font-weight: 800; font-size: 2rem; margin: 0;">Trafix AI 🚦</h2>
-        <p style="color: #94a3b8 !important; font-size: 0.9rem; margin-top: 0;">Traffic Flow Simulation</p>
+        <p style="color: #94a3b8 !important; font-size: 0.9rem; margin-top: 0;">Intelligent Route Optimizer</p>
     </div>
     """, unsafe_allow_html=True)
     
     selected = option_menu(
         menu_title=None,
-        options=["Data Processing", "ML Training", "Dashboard", "Live Route Map"],
-        icons=["cloud-upload", "robot", "speedometer2", "map"],
+        options=["Data Processing", "ML Training", "Dashboard", "Lane Simulation Map"],
+        icons=["cloud-upload", "robot", "speedometer2", "layout-three-columns"],
         menu_icon="cast",
         default_index=0,
         styles={
@@ -157,62 +149,69 @@ with st.sidebar:
         }
     )
     st.markdown("---")
-    st.markdown("**Version:** 2.0.0 Pro")
+    st.markdown("**Version:** 3.0.0 Pro")
     st.markdown("**Status:** System Online 🟢")
 
 
 st.markdown("""
 <div class="hero-card">
-    <h1>🚦 Trafix AI Optimizer</h1>
-    <p>A complete Data Science Pipeline: Upload Data ➡️ Preprocess ➡️ Train ML Model ➡️ Optimize Lane Closures</p>
+    <h1>🚦 Trafix AI: Incident Management System</h1>
+    <p>Predicting optimal diversion routes during real-world lane closures (Accidents, Construction, etc.)</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------- PAGE 1: DATA ----------------
 if selected == "Data Processing":
-    st.header("1. Upload & Clean Dataset")
+    st.header("1. Upload & Clean Traffic Incident Dataset")
     
     col_upload, col_gen = st.columns([2, 1])
     with col_upload:
         uploaded_file = st.file_uploader("Upload your traffic dataset (CSV)", type=["csv"])
     with col_gen:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Generate Demo Dataset (If no CSV)"):
+        if st.button("Generate Demo Incident Dataset"):
             n = 500
-            cities = ["Kyrenia, Cyprus", "Nicosia, Cyprus", "Famagusta, Cyprus", "Larnaca, Cyprus"]
-            origins = np.random.choice(cities, n)
-            destinations = np.random.choice(cities, n)
-            for i in range(n):
-                while destinations[i] == origins[i]:
-                    destinations[i] = np.random.choice(cities)
+            locations = ["Vijayawada to Mangalagiri (NH16)", "Vijayawada to Mangalagiri (Old Route)"]
+            origins = np.random.choice(locations, n)
             
             times = np.random.randint(0, 24, n)
-            lanes = np.random.randint(0, 4, n)
-            duration = np.random.choice([15, 30, 45, 60, 90, 120], n)
+            total_lanes = np.random.choice([4, 6], n)
             density = np.random.uniform(10, 100, n)
-            delay = (lanes * 15) + (density * 0.5) + (duration * 0.1) + np.random.normal(0, 5, n)
-            delay = np.maximum(0, delay) # no negative delay
             
+            incident_types = ["Accident", "Construction", "Maintenance", "Debris Hazard"]
+            incidents = np.random.choice(incident_types, n)
+            
+            incident_lanes = [np.random.randint(0, tl) for tl in total_lanes]
+            
+            # The optimal diversion lane is the safest open lane adjacent to the incident
+            optimal_diversion = []
+            for i in range(n):
+                inc_lane = incident_lanes[i]
+                tl = total_lanes[i]
+                if inc_lane == 0:
+                    optimal_diversion.append(1)
+                elif inc_lane == tl - 1:
+                    optimal_diversion.append(tl - 2)
+                else:
+                    # Randomly pick left or right
+                    optimal_diversion.append(inc_lane + np.random.choice([-1, 1]))
+                
             demo_df = pd.DataFrame({
-                'origin': origins,
-                'destination': destinations,
+                'location': origins,
                 'time': times,
-                'lanes_closed': lanes,
-                'duration': duration,
+                'total_lanes': total_lanes,
                 'traffic_density': np.round(density, 2),
-                'delay': np.round(delay, 2)
+                'incident_type': incidents,
+                'incident_lane': incident_lanes,
+                'optimal_diversion_lane': optimal_diversion
             })
-            peak_mask = ((demo_df["time"] >= 7) & (demo_df["time"] <= 9)) | ((demo_df["time"] >= 16) & (demo_df["time"] <= 19))
-            demo_df.loc[peak_mask, "delay"] *= 1.5
-            demo_df["delay"] += np.random.normal(0, 5, n)
-            demo_df["delay"] = np.clip(demo_df["delay"], 0, None).round(2)
             
             # Intentionally add some nulls and duplicates to prove data cleaning works
             demo_df.loc[10:15, "traffic_density"] = np.nan
             demo_df = pd.concat([demo_df, demo_df.iloc[:5]], ignore_index=True)
             
             st.session_state.raw_data = demo_df
-            st.success("Demo Dataset Generated! It intentionally includes missing values and duplicates for testing.")
+            st.success("Demo Dataset Generated! Ready for analysis.")
 
     if uploaded_file is not None:
         st.session_state.raw_data = pd.read_csv(uploaded_file)
@@ -248,27 +247,25 @@ if selected == "Data Processing":
 
 # ---------------- PAGE 2: MODEL TRAINING ----------------
 if selected == "ML Training":
-    st.header("2. Application of Data Science (ML)")
+    st.header("2. AI Diversion Optimization Model")
+    st.markdown("Train a Classification AI to predict the optimal lane to route traffic into during an incident.")
     
     if st.session_state.cleaned_data is None:
         st.warning("Please upload and clean a dataset in the Data Tab first.")
     else:
         df_clean = st.session_state.cleaned_data
-        numeric_columns = df_clean.select_dtypes(include=np.number).columns.tolist()
+        # We allow categorical columns now too
+        all_columns = df_clean.columns.tolist()
         
         col_f1, col_f2 = st.columns(2)
-        target_col = col_f1.selectbox("Select Target Variable (e.g., Delay)", numeric_columns, index=len(numeric_columns)-1)
+        # Default to optimal_diversion_lane if available
+        default_idx = all_columns.index("optimal_diversion_lane") if "optimal_diversion_lane" in all_columns else len(all_columns)-1
+        target_col = col_f1.selectbox("Select Target Variable (e.g., Optimal Diversion Lane)", all_columns, index=default_idx)
         
-        feature_cols = [c for c in numeric_columns if c != target_col]
-        selected_features = col_f2.multiselect("Select Input Features (e.g., Time, Lanes Closed)", feature_cols, default=feature_cols)
+        feature_cols = [c for c in all_columns if c != target_col and c not in ['location']]
+        selected_features = col_f2.multiselect("Select Input Features (e.g., Incident Type, Incident Lane, Time)", feature_cols, default=feature_cols)
         
-        st.markdown("---")
-        st.subheader("Machine Learning Setup")
-        model_choice = st.radio("Select Problem Type:", 
-                              ["Regression (Predict continuous values e.g., Delay)", 
-                               "Classification (Predict categories/discrete values e.g., Lanes Closed)"])
-        
-        if st.button("Train AI Model", type="primary"):
+        if st.button("Train Diversion AI Optimizer", type="primary"):
             if len(selected_features) == 0:
                 st.error("Please select at least one feature.")
             else:
@@ -278,325 +275,359 @@ if selected == "ML Training":
                 X = df_clean[selected_features]
                 y = df_clean[target_col]
                 
-                if "Classification" in model_choice:
-                    # Check if it's truly continuous by seeing if it has non-zero decimal parts
-                    is_continuous = False
-                    if pd.api.types.is_float_dtype(y):
-                        if not all(y.dropna() % 1 == 0):
-                            is_continuous = True
-                            
-                    if is_continuous or len(y.unique()) > 20:
-                        st.error(f"⚠️ Error: You are trying to run a Classification model on '{target_col}', which contains continuous decimal numbers! Classifiers can only predict exact categories (like whole lanes). Please switch the radio button to 'Regression'!")
-                        st.stop()
-                    
-                    # Ensure y is categorical/integer for classification
-                    y = y.astype(int) if pd.api.types.is_numeric_dtype(y) else y.astype(str)
+                # Convert categorical features to dummy variables
+                X_encoded = pd.get_dummies(X, drop_first=False)
+                st.session_state.model_columns = X_encoded.columns.tolist()
+                
+                # Ensure y is categorical/integer for classification
+                y = y.astype(int) if pd.api.types.is_numeric_dtype(y) else y.astype(str)
                 
                 # Standard Scaling for preprocessing
                 scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X)
+                X_scaled = scaler.fit_transform(X_encoded)
                 st.session_state.scaler = scaler
                 
                 X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
                 
-                if "Classification" in model_choice:
-                    model = RandomForestClassifier(n_estimators=100, random_state=42)
-                    st.session_state.model_type = "classification"
-                else:
-                    model = RandomForestRegressor(n_estimators=100, random_state=42)
-                    st.session_state.model_type = "regression"
+                model = RandomForestClassifier(n_estimators=100, random_state=42)
+                st.session_state.model_type = "classification"
                     
                 model.fit(X_train, y_train)
                 st.session_state.model = model
                 
                 preds = model.predict(X_test)
-                if st.session_state.model_type == "classification":
-                    score = accuracy_score(y_test, preds)
-                    st.success(f"Classification Model Trained Successfully! Accuracy: {score*100:.2f}%")
-                else:
-                    score = r2_score(y_test, preds)
-                    st.success(f"Regression Model Trained Successfully! R² Score: {score:.2f}")
+                score = accuracy_score(y_test, preds)
+                st.success(f"Route Optimization AI Trained Successfully! Accuracy: {score*100:.2f}%")
 
 
 # ---------------- PAGE 3: DASHBOARD ----------------
 if selected == "Dashboard":
-    st.header("3. Traffic Analytics Dashboard & Optimizer")
+    st.header("3. Traffic Incident & Route Optimizer")
+    st.markdown("Use the AI to determine where to safely divert traffic when a lane closes due to an accident or construction.")
     
     if st.session_state.model is None:
-        st.warning("Please train the model in the Model Tab first.")
+        st.warning("Please train the model in the ML Training Tab first.")
     else:
         df_clean = st.session_state.cleaned_data
         
-        # 1. Visualization
-        st.subheader("Data Insights")
-        
-        # --- Chart 1: Time Trend ---
-        if "time" in st.session_state.features and st.session_state.target is not None:
-            trend_data = df_clean.groupby("time")[st.session_state.target].mean().reset_index()
-            trend_data = trend_data.sort_values("time")
-            
-            st.markdown(f"**Average {st.session_state.target.capitalize()} by Time of Day**")
-            fig1 = px.bar(
-                trend_data, 
-                x="time", 
-                y=st.session_state.target,
-                labels={"time": "Time of Day (Hour)", st.session_state.target: f"Average {st.session_state.target.capitalize()}"},
-                color_discrete_sequence=["#ea580c"]
-            )
-            fig1.update_layout(
-                xaxis=dict(tickmode='linear', dtick=1),
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e2e8f0'),
-                margin=dict(l=0, r=0, t=30, b=0)
-            )
-            st.plotly_chart(fig1, use_container_width=True)
-        else:
-            st.info("Time-trend chart requires a 'time' feature to be selected.")
-            
-        col_chart1, col_chart2 = st.columns(2)
-        
-        # --- Chart 2: Secondary Metric Line Chart ---
-        with col_chart1:
-            if "time" in df_clean.columns:
-                numeric_cols = df_clean.select_dtypes(include=np.number).columns.tolist()
-                candidate_cols = [c for c in numeric_cols if c != "time" and c != st.session_state.target]
-                
-                if candidate_cols:
-                    # Prefer traffic_density if available
-                    secondary_metric = "traffic_density" if "traffic_density" in candidate_cols else candidate_cols[0]
-                    
-                    st.markdown(f"**Average {secondary_metric.replace('_', ' ').capitalize()} over Time**")
-                    
-                    line_data = df_clean.groupby("time")[secondary_metric].mean().reset_index()
-                    line_data = line_data.sort_values("time")
-                    
-                    fig2 = px.line(
-                        line_data, 
-                        x="time", 
-                        y=secondary_metric,
-                        labels={"time": "Time of Day (Hour)", secondary_metric: f"Average {secondary_metric.replace('_', ' ').capitalize()}"},
-                        color_discrete_sequence=["#38bdf8"],
-                        markers=True
-                    )
-                    fig2.update_layout(
-                        xaxis=dict(tickmode='linear', dtick=1),
-                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#e2e8f0'), margin=dict(l=0, r=0, t=30, b=0)
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
-                else:
-                    st.info("Not enough numeric columns for a secondary line chart.")
-            else:
-                 st.info("Line chart requires a 'time' column in the dataset.")
-                
-        # --- Chart 3: Target Distribution ---
-        with col_chart2:
-            if st.session_state.target is not None:
-                st.markdown(f"**Overall Distribution of {st.session_state.target.capitalize()}**")
-                target_data = df_clean[st.session_state.target].dropna()
-                
-                fig3 = px.histogram(
-                    target_data, 
-                    x=st.session_state.target,
-                    nbins=15,
-                    labels={st.session_state.target: st.session_state.target.capitalize()},
-                    color_discrete_sequence=["#fb923c"]
-                )
-                fig3.update_layout(
-                    yaxis_title="Frequency Count",
-                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#e2e8f0'), margin=dict(l=0, r=0, t=30, b=0)
-                )
-                st.plotly_chart(fig3, use_container_width=True)
-            
-        st.markdown("---")
-        st.subheader("Live Prediction")
-        
-        st.write("Input current traffic conditions to predict the delay:")
+        st.subheader("Current Traffic Incident Profile")
         inputs = {}
-        cols = st.columns(len(st.session_state.features))
+        cols = st.columns(min(len(st.session_state.features), 4))
         for i, feat in enumerate(st.session_state.features):
-            is_int = pd.api.types.is_integer_dtype(df_clean[feat])
-            min_val = int(df_clean[feat].min()) if is_int else float(df_clean[feat].min())
-            max_val = int(df_clean[feat].max()) if is_int else float(df_clean[feat].max())
-            def_val = int(df_clean[feat].median()) if is_int else float(df_clean[feat].mean())
-            step_val = 1 if is_int else None
-            inputs[feat] = cols[i].number_input(f"{feat}", min_value=min_val, max_value=max_val, value=def_val, step=step_val)
-            
-        if st.button("Predict Delay"):
-            input_df = pd.DataFrame([inputs])
-            input_scaled = st.session_state.scaler.transform(input_df)
-            prediction = st.session_state.model.predict(input_scaled)[0]
-            
-            if st.session_state.model_type == "classification":
-                prediction_formatted = f"{int(prediction)}"
+            col_idx = i % 4
+            if pd.api.types.is_numeric_dtype(df_clean[feat]):
+                is_int = pd.api.types.is_integer_dtype(df_clean[feat])
+                min_val = int(df_clean[feat].min()) if is_int else float(df_clean[feat].min())
+                max_val = int(df_clean[feat].max()) if is_int else float(df_clean[feat].max())
+                def_val = int(df_clean[feat].median()) if is_int else float(df_clean[feat].mean())
+                step_val = 1 if is_int else None
+                inputs[feat] = cols[col_idx].number_input(f"{feat}", min_value=min_val, max_value=max_val, value=def_val, step=step_val)
             else:
-                prediction_formatted = f"{prediction:.2f}"
-            
-            if "lanes_closed" in inputs:
-                st.session_state.active_lanes_closed = int(inputs["lanes_closed"])
+                unique_vals = df_clean[feat].unique().tolist()
+                inputs[feat] = cols[col_idx].selectbox(f"{feat}", unique_vals)
                 
-            st.metric(f"Predicted {st.session_state.target.capitalize()}", prediction_formatted)
-            
         st.markdown("---")
-        st.subheader("Lane Closure Optimization Engine")
-        st.markdown("This algorithm searches for the optimal lane closure configuration to **minimize** the delay.")
+        col_res1, col_res2 = st.columns(2)
         
-        opt_fixed_feat = st.selectbox("Select a feature to lock (e.g., Traffic Density)", st.session_state.features)
-        is_int_opt = pd.api.types.is_integer_dtype(df_clean[opt_fixed_feat])
-        def_fixed_val = int(df_clean[opt_fixed_feat].median()) if is_int_opt else float(df_clean[opt_fixed_feat].mean())
-        step_fixed_val = 1 if is_int_opt else None
-        fixed_val = st.number_input(f"Current {opt_fixed_feat} value:", value=def_fixed_val, step=step_fixed_val)
-        
-        if st.button("Run Optimizer", type="primary"):
-            best_delay = float('inf')
-            best_config = None
-            
-            # Simple grid search over min/max bounds of the other features
-            import itertools
-            search_space = []
-            feat_names = []
-            
-            for feat in st.session_state.features:
-                if feat == opt_fixed_feat:
-                    search_space.append([fixed_val])
-                else:
-                    unique_vals = df_clean[feat].unique()
-                    if len(unique_vals) < 10:
-                        search_space.append(sorted(unique_vals))
-                    else:
-                        # 5 steps between min and max
-                        if pd.api.types.is_integer_dtype(df_clean[feat]):
-                            vals = np.linspace(df_clean[feat].min(), df_clean[feat].max(), 5)
-                            search_space.append(np.unique(np.round(vals).astype(int)))
-                        else:
-                            search_space.append(np.linspace(df_clean[feat].min(), df_clean[feat].max(), 5))
-                feat_names.append(feat)
+        with col_res1:
+            st.markdown("### 🤖 AI Recommendation")
+            st.info("The AI analyzes the incident type, time, and density to pick the safest diversion lane.")
+            if st.button("Predict Safest Diversion Lane", type="primary"):
+                input_df = pd.DataFrame([inputs])
+                input_encoded = pd.get_dummies(input_df)
                 
-            combinations = list(itertools.product(*search_space))
-            
-            for combo in combinations:
-                input_df = pd.DataFrame([combo], columns=feat_names)
-                input_scaled = st.session_state.scaler.transform(input_df)
-                pred = st.session_state.model.predict(input_scaled)[0]
+                # Ensure all columns match training data
+                for c in st.session_state.model_columns:
+                    if c not in input_encoded.columns:
+                        input_encoded[c] = 0
+                input_encoded = input_encoded[st.session_state.model_columns]
                 
-                if pred < best_delay:
-                    best_delay = pred
-                    best_config = combo
-            
-            st.success("Optimization Complete!")
-            
-            if st.session_state.model_type == "classification":
-                st.write(f"**Optimal {st.session_state.target.capitalize()} Class Predicted:** {int(best_delay)}")
-            else:
-                st.write(f"**Lowest Predicted {st.session_state.target.capitalize()}:** {best_delay:.2f}")
+                input_scaled = st.session_state.scaler.transform(input_encoded)
+                prediction = int(st.session_state.model.predict(input_scaled)[0])
                 
-            st.write("**Optimal Configuration:**")
-            for name, val in zip(feat_names, best_config):
-                if pd.api.types.is_integer_dtype(df_clean[name]):
-                    st.write(f"- {name}: {int(val)}")
-                else:
-                    st.write(f"- {name}: {val:.2f}")
-                    
-            if "lanes_closed" in feat_names:
-                st.session_state.active_lanes_closed = int(best_config[feat_names.index("lanes_closed")])
+                st.success(f"✅ AI Decision: **Divert traffic into Lane {prediction}**")
+                # Pre-fill manual override
+                st.session_state.active_diversion_lane = prediction
+                if "incident_lane" in inputs:
+                    st.session_state.active_incident_lane = int(inputs["incident_lane"])
+
+        with col_res2:
+            st.markdown("### 🎛️ Manual Route Override")
+            st.warning("Directly configure the incident location and the target diversion lane for the 3D map.")
+            total_lanes_avail = 4
+            if "total_lanes" in inputs:
+                total_lanes_avail = int(inputs["total_lanes"])
+            elif "total_lanes" in df_clean.columns:
+                total_lanes_avail = int(df_clean["total_lanes"].max())
+                
+            lane_options = [i for i in range(total_lanes_avail)]
+            
+            c1, c2 = st.columns(2)
+            
+            # Get current selected from state or default
+            current_inc = st.session_state.get('active_incident_lane', 0)
+            if current_inc not in lane_options: current_inc = lane_options[0]
+            
+            current_div = st.session_state.get('active_diversion_lane', 1)
+            if current_div not in lane_options: current_div = lane_options[-1]
+                
+            selected_inc = c1.selectbox("Incident Location (Blocked Lane):", lane_options, index=lane_options.index(current_inc))
+            selected_div = c2.selectbox("Diversion Target (Open Lane):", lane_options, index=lane_options.index(current_div))
+            
+            # Temporary Lane Option
+            is_construction = inputs.get("incident_type", "") == "Construction"
+            deploy_temp = st.checkbox("🚧 Deploy Temporary Bypass Lane (Construction Only)", 
+                                      value=st.session_state.get('temp_lane_active', False), 
+                                      disabled=not is_construction)
+            
+            if st.button("Apply to 3D Map Simulation"):
+                st.session_state.active_incident_lane = int(selected_inc)
+                st.session_state.active_diversion_lane = int(selected_div)
+                st.session_state.temp_lane_active = deploy_temp if is_construction else False
+                st.success(f"✅ Simulation Ready! Map will show Incident in Lane {selected_inc} and Diversion to Lane {selected_div}.")
 
 
 # ---------------- PAGE 4: MAP ----------------
-if selected == "Live Route Map":
-    st.header("🗺️ Intelligent Real-World Routing Map")
-    st.markdown("Enter two cities to visualize real road networks. The AI will calculate the optimal route based on your predicted lane closures!")
+if selected == "Lane Simulation Map":
+    st.header("🗺️ 3D Map Visualization: 500m Warning Zone Simulation")
+    st.markdown("Visualize real-world incident closures, advanced 500-meter warning zones, and intelligent vehicle diversions in full 3D.")
     
-    lanes_closed = st.session_state.active_lanes_closed
-    st.info(f"**Current Configuration:** {lanes_closed} Lanes Closed. (This map updates automatically when you run AI Predictions or the Optimizer!)")
+    incident_lane = st.session_state.get('active_incident_lane', 0)
+    diversion_lane = st.session_state.get('active_diversion_lane', 1)
     
-    # Extract valid dataset cities
-    valid_cities = set()
-    if st.session_state.cleaned_data is not None:
-        df = st.session_state.cleaned_data
-        for col in df.select_dtypes(include=['object', 'string']).columns:
-            valid_cities.update(df[col].dropna().unique())
-    valid_cities_list = sorted(list(valid_cities)) if valid_cities else ["Kyrenia, Cyprus", "Nicosia, Cyprus"]
-            
+    # Try to extract total_lanes from session state if available, default to 4
+    total_lanes = 4
+    if st.session_state.cleaned_data is not None and "total_lanes" in st.session_state.cleaned_data.columns:
+        total_lanes = int(st.session_state.cleaned_data["total_lanes"].max())
+        
+    total_lanes = max(2, min(total_lanes, 8))
+    if incident_lane >= total_lanes: incident_lane = 0
+    if diversion_lane >= total_lanes: diversion_lane = 1
+    
+    temp_lane_active = st.session_state.get('temp_lane_active', False)
+    
+    st.error(f"**⚠️ ACTIVE INCIDENT REPORTED IN LANE {incident_lane}**")
+    if temp_lane_active:
+        st.success(f"**🚧 TEMPORARY BYPASS:** Routing traffic to newly constructed Shoulder Lane")
+        diversion_lane = total_lanes # Set diversion to the extra lane index
+    else:
+        st.success(f"**🚦 ACTIVE DIVERSION:** Routing traffic to **Lane {diversion_lane}**")
+    
+    map_type = st.radio("Select Map Engine:", [
+        "🛰️ 3D Satellite View (Free)", 
+        "🗺️ Google Maps (API Key Required)", 
+        "🌑 Mapbox (API Key Required)"
+    ], horizontal=True)
+    
+    api_key = ""
+    if "API Key Required" in map_type:
+        api_key = st.text_input(f"Enter API Key for {map_type.split(' ')[1]}:", type="password")
+        if not api_key:
+            st.warning("Please enter your API Key to load this map engine. Falling back to Free View.")
+    
+    st.markdown("### Interactive 3D PyDeck Simulation")
+    
     col_map1, col_map2 = st.columns(2)
+    sim_location = col_map1.selectbox("Select Road Segment for Simulation:", ["Vijayawada to Mangalagiri (NH16)"])
     
-    start_idx = 0
-    end_idx = 1 if len(valid_cities_list) > 1 else 0
-    
-    start_city = col_map1.selectbox("Origin City/Location:", options=valid_cities_list, index=start_idx)
-    end_city = col_map2.selectbox("Destination City/Location:", options=valid_cities_list, index=end_idx)
-    
-    with st.spinner("Connecting to GPS Satellites..."):
+    if sim_location == "Vijayawada to Mangalagiri (NH16)":
+        # Full stretch from Vijayawada Benz Circle to Mangalagiri
+        start_pt = (16.4965, 80.6552)
+        end_pt = (16.4314, 80.5671)
+    else:
+        start_pt = (16.4965, 80.6552)
+        end_pt = (16.4314, 80.5671)
+        
+    def haversine(lat1, lon1, lat2, lon2):
+        R = 6371000
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlam = math.radians(lon2 - lon1)
+        a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+        return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        
+    with st.spinner("Fetching Real Road Geometry & Calculating 500m Warning Zones..."):
         try:
-            start_coords = get_cached_coordinates(start_city)
-            end_coords = get_cached_coordinates(end_city)
+            osrm_url = f"http://router.project-osrm.org/route/v1/driving/{start_pt[1]},{start_pt[0]};{end_pt[1]},{end_pt[0]}?overview=full&geometries=polyline"
+            res = requests.get(osrm_url)
+            data = res.json()
             
-            if not start_coords or not end_coords:
-                st.error("Could not find one of the locations. Please check your spelling and try adding ', Cyprus'.")
-            else:
-                # Center map on the middle point
-                mid_lat = (start_coords[0] + end_coords[0]) / 2
-                mid_lon = (start_coords[1] + end_coords[1]) / 2
-                m = folium.Map(location=[mid_lat, mid_lon], zoom_start=11)
+            if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
+                geometry = data["routes"][0]["geometry"]
+                coords = polyline.decode(geometry)
                 
-                # Add Markers
-                folium.Marker(start_coords, popup="Origin", icon=folium.Icon(color='green', icon='play')).add_to(m)
-                folium.Marker(end_coords, popup="Destination", icon=folium.Icon(color='red', icon='stop')).add_to(m)
-                
-                # Fetch OSRM Route
-                data = get_cached_osrm_route(start_coords, end_coords)
-                
-                if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
-                    routes = data["routes"]
+                # Calculate distances to find the 500m warning zone
+                cumulative_distances = [0.0]
+                for i in range(1, len(coords)):
+                    dist = haversine(coords[i-1][0], coords[i-1][1], coords[i][0], coords[i][1])
+                    cumulative_distances.append(cumulative_distances[-1] + dist)
                     
-                    # Determine the index of the "Optimized" route
-                    # If lanes are closed on the primary route, the bypass (index 1) is optimal
-                    optimal_index = 0
-                    if lanes_closed > 0 and len(routes) > 1:
-                        optimal_index = 1
+                total_distance = cumulative_distances[-1]
+                
+                # Disruption (Accident) at 70% of the road
+                disruption_distance = total_distance * 0.7
+                disruption_idx = min(range(len(cumulative_distances)), key=lambda i: abs(cumulative_distances[i]-disruption_distance))
+                
+                # Diversion warning starts 500m before disruption
+                diversion_distance = max(0, disruption_distance - 500)
+                diversion_idx = min(range(len(cumulative_distances)), key=lambda i: abs(cumulative_distances[i]-diversion_distance))
+                
+                path_data = []
+                lane_width = 0.0001
+                
+                for i in range(total_lanes):
+                    offset = (i - total_lanes / 2 + 0.5) * lane_width
+                    # OSRM gives (lat, lon), pydeck needs (lon, lat)
+                    lane_coords = [[c[1] + offset, c[0] - offset] for c in coords]
+                    
+                    if i == incident_lane:
+                        # Split incident lane into 3 segments: Open (Green) -> Warning (Orange) -> Blocked (Red)
+                        path_data.append({"path": lane_coords[:diversion_idx+1], "color": [34, 197, 94], "width": 5}) # Green
+                        path_data.append({"path": lane_coords[diversion_idx:disruption_idx+1], "color": [249, 115, 22], "width": 5}) # Orange (500m Zone)
+                        path_data.append({"path": lane_coords[disruption_idx:], "color": [239, 68, 68], "width": 5}) # Red (Blocked)
+                    else:
+                        # Normal open lanes
+                        path_data.append({"path": lane_coords, "color": [34, 197, 94], "width": 5}) # Green
                         
-                    # Loop through ALL possible routes returned by the GPS server
-                    for i, route in enumerate(routes):
-                        geometry = route["geometry"]
-                        coords = polyline.decode(geometry)
+                # Add temporary bypass lane if active
+                if temp_lane_active:
+                    offset_temp = (total_lanes - total_lanes / 2 + 0.5) * lane_width
+                    temp_coords = [[c[1] + offset_temp, c[0] - offset_temp] for c in coords]
+                    path_data.append({"path": temp_coords, "color": [234, 179, 8], "width": 6}) # Distinct Yellow bypass
                         
-                        if i == optimal_index:
-                            color = "green"
-                            tooltip = "Optimized Route (Best Time)"
-                            weight = 6
-                            opacity = 0.9
-                            dash = None
-                        else:
-                            color = "lightcoral" # Light Red
-                            tooltip = "Sub-optimal Route (Congested or Slower)"
-                            weight = 4
-                            opacity = 0.6
-                            dash = '10'
+                # Simulated Vehicle Trajectory (Yellow)
+                car_coords = []
+                if incident_lane < total_lanes:
+                    offset_inc = (incident_lane - total_lanes / 2 + 0.5) * lane_width
+                    # If temp_lane_active, diversion_lane is set to total_lanes (the extra lane)
+                    target_div_idx = total_lanes if temp_lane_active else diversion_lane
+                    offset_div = (target_div_idx - total_lanes / 2 + 0.5) * lane_width
+                    
+                    inc_path = [[c[1] + offset_inc, c[0] - offset_inc] for c in coords]
+                    div_path = [[c[1] + offset_div, c[0] - offset_div] for c in coords]
+                    
+                    # Travel on incident lane until diversion point
+                    car_coords.extend(inc_path[:diversion_idx])
+                    
+                    # Smooth transition to diversion lane
+                    transition = []
+                    steps = min(10, len(coords) - diversion_idx)
+                    for step in range(steps):
+                        idx = diversion_idx + step
+                        if idx < len(coords):
+                            ratio = step / float(steps)
+                            lon = inc_path[idx][0] * (1-ratio) + div_path[idx][0] * ratio
+                            lat = inc_path[idx][1] * (1-ratio) + div_path[idx][1] * ratio
+                            transition.append([lon, lat])
                             
-                        folium.PolyLine(
-                            locations=coords,
-                            color=color,
-                            weight=weight,
-                            opacity=opacity,
-                            dash_array=dash,
-                            tooltip=tooltip
-                        ).add_to(m)
-                        
-                    # Floating Map Legend
-                    legend_html = '''
-                     <div style="position: fixed; 
-                     bottom: 50px; left: 50px; width: 250px; height: 100px; 
-                     border: 1px solid rgba(255,255,255,0.2); z-index:9999; font-size:14px;
-                     background-color:#1e293b; color: #f8fafc; padding: 10px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-                     <b>🚦 Live GPS Route Legend</b><br>
-                     <i class="fa fa-minus" style="color:green; font-weight:bold;"></i> Optimized Route <br>
-                     <i class="fa fa-minus" style="color:lightcoral; font-weight:bold;"></i> Sub-optimal Route <br>
-                     </div>
-                     '''
-                    m.get_root().html.add_child(folium.Element(legend_html))
+                    car_coords.extend(transition)
                     
-                    # Render map
-                    st_folium(m, width=1200, height=550)
+                    # Continue on diversion lane
+                    if diversion_idx + steps < len(coords):
+                        car_coords.extend(div_path[diversion_idx + steps : disruption_idx + 20])
+                    
+                    path_data.append({"path": car_coords, "color": [255, 255, 255], "width": 8}) # Bright White/Yellow Trajectory
+                
+                # Markers (Scatterplot)
+                marker_data = []
+                if incident_lane < total_lanes:
+                    offset_inc = (incident_lane - total_lanes / 2 + 0.5) * lane_width
+                    inc_lon = coords[disruption_idx][1] + offset_inc
+                    inc_lat = coords[disruption_idx][0] - offset_inc
+                    
+                    div_lon = coords[diversion_idx][1] + offset_inc
+                    div_lat = coords[diversion_idx][0] - offset_inc
+                    
+                    # Incident marker
+                    marker_data.append({"position": [inc_lon, inc_lat], "color": [255, 0, 0], "radius": 40})
+                    # 500m Warning Start marker
+                    marker_data.append({"position": [div_lon, div_lat], "color": [255, 165, 0], "radius": 25})
+                
+                df_path = pd.DataFrame(path_data)
+                df_markers = pd.DataFrame(marker_data)
+                
+                center_lat = sum(c[0] for c in coords) / len(coords)
+                center_lon = sum(c[1] for c in coords) / len(coords)
+                
+                layer_lines = pdk.Layer(
+                    "PathLayer",
+                    df_path,
+                    get_path="path",
+                    get_color="color",
+                    width_scale=5,
+                    width_min_pixels=3,
+                    get_width="width",
+                )
+                
+                layer_markers = pdk.Layer(
+                    "ScatterplotLayer",
+                    df_markers,
+                    get_position="position",
+                    get_fill_color="color",
+                    get_radius="radius",
+                    pickable=True
+                )
+                
+                view_state = pdk.ViewState(
+                    latitude=center_lat,
+                    longitude=center_lon,
+                    zoom=12,
+                    pitch=50,
+                )
+                
+                if "Google Maps" in map_type and api_key:
+                    r = pdk.Deck(
+                        map_provider="google_maps",
+                        api_keys={"google_maps": api_key},
+                        layers=[layer_lines, layer_markers], 
+                        initial_view_state=view_state
+                    )
+                elif "Mapbox" in map_type and api_key:
+                    r = pdk.Deck(
+                        map_provider="mapbox",
+                        map_style=pdk.map_styles.DARK,
+                        api_keys={"mapbox": api_key},
+                        layers=[layer_lines, layer_markers], 
+                        initial_view_state=view_state
+                    )
                 else:
-                    st.error("Could not calculate a real road route between these locations. The server may be unreachable.")
+                    base_layer = pdk.Layer(
+                        "TileLayer",
+                        data="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                        min_zoom=0,
+                        max_zoom=19,
+                    )
+                    r = pdk.Deck(layers=[base_layer, layer_lines, layer_markers], initial_view_state=view_state, map_style=None)
+                
+                st.pydeck_chart(r)
+                
+                # Custom Legend Overlay
+                st.markdown("""
+                <div style="background: rgba(30, 41, 59, 0.8); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);">
+                    <h4 style="margin-top:0;">🚦 Simulation Legend</h4>
+                    <div style="display:flex; align-items:center; margin-bottom:5px;">
+                        <span style="background-color: #22c55e; width: 20px; height: 10px; display:inline-block; margin-right: 10px; border-radius: 2px;"></span> Open Lane
+                    </div>
+                    <div style="display:flex; align-items:center; margin-bottom:5px;">
+                        <span style="background-color: #ef4444; width: 20px; height: 10px; display:inline-block; margin-right: 10px; border-radius: 2px;"></span> Blocked Lane (Incident Location)
+                    </div>
+                    <div style="display:flex; align-items:center; margin-bottom:5px;">
+                        <span style="background-color: #f97316; width: 20px; height: 10px; display:inline-block; margin-right: 10px; border-radius: 2px;"></span> 500-Meter Warning Zone
+                    </div>
+                    <div style="display:flex; align-items:center; margin-bottom:5px;">
+                        <span style="background-color: #ffffff; width: 20px; height: 5px; display:inline-block; margin-right: 10px; border-radius: 2px;"></span> Vehicle Trajectory
+                    </div>
+                    <div style="display:flex; align-items:center; margin-bottom:5px;">
+                        <span style="background-color: #eab308; width: 20px; height: 10px; display:inline-block; margin-right: 10px; border-radius: 2px;"></span> Temporary Bypass Lane (If active)
+                    </div>
+                    <div style="display:flex; align-items:center;">
+                        <span style="background-color: #ff0000; width: 14px; height: 14px; border-radius: 50%; display:inline-block; margin-right: 13px; margin-left: 3px;"></span> Incident Point
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            else:
+                st.error("Could not fetch real road geometry from OSRM.")
         except Exception as e:
-            st.error(f"Error connecting to GPS API: {e}")
+            st.error(f"Error generating simulation: {e}")
